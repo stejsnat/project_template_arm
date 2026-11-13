@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dozenten-Quiz: Sonnendach-Potenzial Winterthur</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, sans-serif;
+      line-height: 1.5;
+      color: #17212b;
+      background: #f3f6f8;
+    }
+    body { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    header, fieldset, #result {
+      background: white;
+      border: 1px solid #d5dee5;
+      border-radius: 0.6rem;
+      padding: 1rem 1.25rem;
+      margin: 1rem 0;
+    }
+    fieldset { border-left: 5px solid #2878b5; }
+    legend { font-weight: 700; padding: 0 0.4rem; }
+    label { display: block; margin: 0.55rem 0; }
+    button {
+      border: 0;
+      border-radius: 0.35rem;
+      background: #145a86;
+      color: white;
+      cursor: pointer;
+      font: inherit;
+      padding: 0.7rem 1rem;
+      margin: 0.5rem 0.5rem 0 0;
+    }
+    button:focus-visible, input:focus-visible { outline: 3px solid #f0a202; }
+    .correct { color: #146c43; font-weight: 700; }
+    .incorrect { color: #a42b24; font-weight: 700; }
+    .explanation { margin: 0.6rem 0 0; }
+    #result { font-size: 1.1rem; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dozenten-Quiz: Sonnendach-Potenzial Winterthur</h1>
+    <p>
+      Zehn Fragen zum Datensatz, zu den Methoden und zur Interpretation.
+      Antworten wählen und danach auswerten. Das Quiz funktioniert offline;
+      es speichert oder überträgt keine Antworten.
+    </p>
+  </header>
+  <form id="quiz" aria-describedby="instructions">
+    <p id="instructions">Pro Frage genau eine Antwort auswählen.</p>
+    <div id="questions"></div>
+    <button type="submit">Antworten auswerten</button>
+    <button type="reset">Neu starten</button>
+  </form>
+  <div id="result" role="status" aria-live="polite" hidden></div>
+  <script>
+    const quizItems = [
+      {
+        question: "Was bedeutet stromertrag in dieser Untersuchung?",
+        options: [
+          "Gemessene Produktion installierter Solaranlagen",
+          "Vom BFE geschätztes jährliches Solarstrompotenzial",
+          "Der Stromverbrauch der Gebäude",
+          "Eine Prognose des Strompreises"
+        ],
+        answer: 1,
+        explanation: "Es ist ein modellierter BFE-Potenzialwert, keine Messung realer Produktion."
+      },
+      {
+        question: "Aus welcher Quelle stammen die Dachflächen?",
+        options: [
+          "geo.admin.ch REST API, Layer ch.bfe.solarenergie-eignung-daecher",
+          "Manuell gezeichnete Dachpolygone",
+          "Eine private Stromzähler-Datenbank",
+          "Ein Web-Scraping von Immobilienanzeigen"
+        ],
+        answer: 0,
+        explanation: "Die Dachattribute und Geometrien werden über den geo.admin.ch-MapServer abgefragt."
+      },
+      {
+        question: "Was geschieht mit der Sentinel-ID -99?",
+        options: [
+          "Sie wird als Gebäude-ID verwendet",
+          "Sie wird als echtes Dach gespeichert",
+          "Sie wird als ungültige Feature-ID aus der Analyse ausgeschlossen",
+          "Sie wird in einen Ertragswert umgerechnet"
+        ],
+        answer: 2,
+        explanation: "Die Sentinel-Zeile ist kein gültiges Dachmerkmal und wird vor der Analyse entfernt."
+      },
+      {
+        question: "Warum werden Sinus und Kosinus für die Ausrichtung gebildet?",
+        options: [
+          "Damit fehlende Werte automatisch verschwinden",
+          "Weil Winkel zirkulär sind und ihre Randwerte nahe beieinander liegen",
+          "Damit die Gebäude-ID numerisch wird",
+          "Um den Zielwert in eine Klassenvariable umzuwandeln"
+        ],
+        answer: 1,
+        explanation: "Sinus/Kosinus kodieren die zyklische Nähe von Winkeln, etwa nahe -180° und 180°."
+      },
+      {
+        question: "Warum bleiben alle Dächer eines Gebäudes im selben Train/Test-Teil?",
+        options: [
+          "Damit der Test möglichst klein wird",
+          "Damit keine Information eines Gebäudes über mehrere Teilmengen leakt",
+          "Weil Random Forest nur eine Gruppe akzeptiert",
+          "Damit der API-Aufruf weniger Seiten benötigt"
+        ],
+        answer: 1,
+        explanation: "Der gebäudeweise Split prüft die Übertragbarkeit auf zuvor ungesehene Gebäude."
+      },
+      {
+        question: "Weshalb werden gstrahlung und Ertragsteilsummen nicht als Modellmerkmale genutzt?",
+        options: [
+          "Sie sind geografische Koordinaten",
+          "Sie sind nicht numerisch",
+          "Sie liegen dem Zielwert zu nahe oder sind daraus abgeleitet und könnten Leakage erzeugen",
+          "Sie würden den Datensatz vergrössern"
+        ],
+        answer: 2,
+        explanation: "Zielnahe, abgeleitete Variablen könnten die Testgüte künstlich überschätzen."
+      },
+      {
+        question: "Was sagt ein niedrigerer RMSE im Modellvergleich aus?",
+        options: [
+          "Die Vorhersagefehler sind im quadratischen Mittel kleiner; grosse Fehler zählen stärker",
+          "Das Modell beweist einen kausalen Effekt",
+          "Der p-Wert ist automatisch kleiner",
+          "Das Modell erklärt exakt 100 Prozent der Varianz"
+        ],
+        answer: 0,
+        explanation: "RMSE misst Fehler in kWh/Jahr und gewichtet grosse Abweichungen stärker."
+      },
+      {
+        question: "Was kann der Spearman-p-Wert hier stützen?",
+        options: [
+          "Dass Dachfläche den Ertrag kausal verursacht",
+          "Evidenz gegen die Nullhypothese eines monotonen Zusammenhangs von null",
+          "Dass das Modell in anderen Städten gleich gut funktioniert",
+          "Dass alle Daten fehlerfrei sind"
+        ],
+        answer: 1,
+        explanation: "Der p-Wert beurteilt Evidenz gegen die Nullhypothese, nicht Kausalität oder externe Gültigkeit."
+      },
+      {
+        question: "Warum werden die LV95-Geometrien vor der Folium-Karte transformiert?",
+        options: [
+          "Folium-Karten verwenden WGS84-Koordinaten",
+          "LV95 enthält keine Dachumrisse",
+          "Damit die Dachflächen anonymisiert werden",
+          "Damit sich die Flächenwerte ändern"
+        ],
+        answer: 0,
+        explanation: "Die Karte wird mit Geometrien in EPSG:4326 (WGS84) dargestellt."
+      },
+      {
+        question: "Wozu dient die Median-Baseline?",
+        options: [
+          "Sie ist ein drittes komplexes Modell",
+          "Sie prüft, ob die Modelle besser als eine einfache konstante Vorhersage sind",
+          "Sie ersetzt den Testdatensatz",
+          "Sie liefert den Spearman-p-Wert"
+        ],
+        answer: 1,
+        explanation: "Die Baseline macht sichtbar, ob die Regressionsmodelle einen praktischen Prognosegewinn liefern."
+      }
+    ];
+
+    const questionContainer = document.querySelector("#questions");
+    const result = document.querySelector("#result");
+    const form = document.querySelector("#quiz");
+
+    function renderQuestions() {
+      questionContainer.replaceChildren();
+      quizItems.forEach((item, index) => {
+        const fieldset = document.createElement("fieldset");
+        const legend = document.createElement("legend");
+        legend.textContent = `${index + 1}. ${item.question}`;
+        fieldset.append(legend);
+
+        item.options.forEach((option, optionIndex) => {
+          const label = document.createElement("label");
+          const input = document.createElement("input");
+          input.type = "radio";
+          input.name = `question-${index}`;
+          input.value = String(optionIndex);
+          input.required = true;
+          label.append(input, document.createTextNode(` ${option}`));
+          fieldset.append(label);
+        });
+        questionContainer.append(fieldset);
+      });
+      result.hidden = true;
+      result.replaceChildren();
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+
+      const formData = new FormData(form);
+      let score = 0;
+      quizItems.forEach((item, index) => {
+        const selected = Number(formData.get(`question-${index}`));
+        const fieldset = questionContainer.children[index];
+        const feedback = document.createElement("p");
+        feedback.className = selected === item.answer ? "correct" : "incorrect";
+        if (selected === item.answer) score += 1;
+        feedback.textContent = selected === item.answer
+          ? "Richtig."
+          : `Nicht ganz. Richtige Antwort: ${item.options[item.answer]}`;
+
+        const explanation = document.createElement("p");
+        explanation.className = "explanation";
+        explanation.textContent = item.explanation;
+        fieldset.append(feedback, explanation);
+        fieldset.querySelectorAll("input").forEach((input) => {
+          input.disabled = true;
+        });
+      });
+      result.textContent = `Ergebnis: ${score} von ${quizItems.length} richtig.`;
+      result.hidden = false;
+      form.querySelector('button[type="submit"]').disabled = true;
+    });
+
+    form.addEventListener("reset", () => {
+      window.setTimeout(() => {
+        form.querySelector('button[type="submit"]').disabled = false;
+        renderQuestions();
+      }, 0);
+    });
+
+    renderQuestions();
+  </script>
+</body>
+</html>

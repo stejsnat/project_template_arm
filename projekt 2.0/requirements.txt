@@ -1,0 +1,13 @@
+ipython
+jupyter
+matplotlib
+numpy
+pandas
+folium
+pyproj
+requests
+scikit-learn
+scipy
+seaborn
+sqlalchemy>=2.0
+psycopg[binary]>=3.1
