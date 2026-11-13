@@ -9,5 +9,6 @@ requests
 scikit-learn
 scipy
 seaborn
+shapely
 sqlalchemy>=2.0
 psycopg[binary]>=3.1

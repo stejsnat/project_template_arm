@@ -13,13 +13,27 @@ Die Zahlen und Screenshots nach dem letzten vollständigen Notebook-Lauf
 aktualisieren. Die Folien als PDF exportieren. Keine festen Kennzahlen aus
 älteren API-Läufen ungeprüft übernehmen.
 
+## Ergebnisse des stadtweiten Laufs vom 13. November 2026
+
+- 68,07 km² Gemeindegebiet, 333 abgefragte Kacheln
+- 55’277 Dachflächen, 20’831 Gebäude
+- Spearman-rho = 0.977, p < 0.001
+- Gebäude-holdout-Test: 11’055 Dächer / 4’167 Testgebäude
+- Random Forest: R² = 0.992, RMSE = 2’886.7, MAE = 988.6 kWh/Jahr
+- Multiple lineare Regression: R² = 0.821, RMSE = 13’857.4,
+  MAE = 2’282.3 kWh/Jahr
+- Median-Baseline: R² = -0.049, RMSE = 33’556.6, MAE = 12’021.6 kWh/Jahr
+
+Die Zielwerte sind BFE-Potenzialschätzungen und keine Messungen realer
+Anlagenproduktion. Ergebnisse nach erneuter Datenerhebung aktualisieren.
+
 ## Empfohlene Folienstruktur
 
 | Folie | Inhalt | Beleg / Visual |
 |---|---|---|
 | 1. Titel | Projekttitel, Namen, Gruppe und Datum | Titelbild oder Kartenausschnitt |
 | 2. Einführung | Hintergrund, Problem, Ziel und Forschungsfrage | Forschungsfrage gross hervorheben |
-| 3. Material und Daten | BFE-Solarkarte, geo.admin.ch-API, Gebiet und Zielvariable | API-Layer und BBOX aus dem Notebook |
+| 3. Material und Daten | BFE-Solarkarte, geo.admin.ch-API, ganze Gemeinde und Zielvariable | Gemeindegrenze und 500-m-Kacheln aus dem Notebook |
 | 4. Methoden | Abruf, Bereinigung, neue Variablen, SQLite/PostgreSQL und SQL | kurzer Codeausschnitt oder Datenfluss |
 | 5. EDA und Raum | Verteilungen, Eignungsklassen und räumliche Muster | eine zentrale Grafik und ein Kartenausschnitt |
 | 6. Statistik | Spearman-rho, p-Wert und Interpretation | aktuelles Notebook-Ergebnis |

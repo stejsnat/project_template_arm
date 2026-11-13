@@ -5,10 +5,10 @@
 # vom BFE geschätzten jährlichen Solarstromertrag zusammen, und wie gut lässt
 # sich dieser Ertrag für bisher ungesehene Gebäude vorhersagen?
 #
-# Die Analyse nutzt die öffentliche geo.admin.ch-API für ein Gebiet von
-# 500 x 500 m in der Winterthurer Altstadt (LV95/EPSG:2056). Der Zielwert ist
-# ein modellierter Potenzialwert der Solarkarte, keine Messung real erzeugten
-# Stroms und keine Aussage über installierte Anlagen.
+# Die Analyse nutzt die öffentliche geo.admin.ch-API für das gesamte
+# Gemeindegebiet Winterthur. Die Gemeindegrenze wird in 500-m-Kacheln
+# unterteilt (LV95/EPSG:2056). Der Zielwert ist ein modellierter
+# Potenzialwert, keine Messung real erzeugten Stroms.
 #
 # Schritte: API-Datenerhebung, Datenbereinigung und Merkmalsbildung,
 # SQLite/SQL, explorative Datenanalyse, Geovisualisierung, Korrelationstest
@@ -31,8 +31,11 @@ import pandas as pd
 import requests
 import seaborn as sns
 from sqlalchemy import create_engine, text
-from IPython.display import display
+from IPython.display import FileLink, display
 from pyproj import Transformer
+from shapely.geometry import MultiPolygon, Polygon, box, mapping
+from shapely.ops import unary_union
+from shapely.ops import transform as transform_geometry
 from scipy.stats import spearmanr
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.ensemble import RandomForestRegressor
@@ -47,31 +50,45 @@ PAGE_SIZE = 200
 MAX_OFFSET = 20_000
 TIMEOUT_SECONDS = 60
 API_URL = "https://api3.geo.admin.ch/rest/services/ech/MapServer/identify"
+FIND_URL = "https://api3.geo.admin.ch/rest/services/api/MapServer/find"
 LAYER = "ch.bfe.solarenergie-eignung-daecher"
-BBOX = (2696600, 1261600, 2697100, 1262100)
+MUNICIPALITY_LAYER = "ch.swisstopo.swissboundaries3d-gemeinde-flaeche.fill"
+MUNICIPALITY = "Winterthur"
+TILE_SIZE = 500
+LV95_TO_WGS84 = Transformer.from_crs("EPSG:2056", "EPSG:4326", always_xy=True)
 
-# Ausgaben bleiben neben diesem Skript, unabhängig vom Startverzeichnis.
-PROJECT_DIR = Path(__file__).resolve().parent
-RAW_CSV = PROJECT_DIR / "solar_test_winterthur_altstadt_raw.csv"
-CLEAN_CSV = PROJECT_DIR / "solar_test_winterthur_altstadt_clean.csv"
+# Ausgaben bleiben im Projektordner – im Skript oder beim Start aus dem Notebook.
+if "__file__" in globals():
+    PROJECT_DIR = Path(__file__).resolve().parent
+else:
+    CWD = Path.cwd().resolve()
+    PROJECT_DIR = (
+        CWD
+        if CWD.name == "projekt 2.0"
+        else CWD / "projekt 2.0"
+        if (CWD / "projekt 2.0").is_dir()
+        else CWD
+    )
+RAW_CSV = PROJECT_DIR / "solar_winterthur_stadt_raw.csv"
+CLEAN_CSV = PROJECT_DIR / "solar_winterthur_stadt_clean.csv"
 DATABASE = PROJECT_DIR / "sonnendach_winterthur.sqlite"
 MAP_HTML = PROJECT_DIR / "sonnendach_winterthur_karte.html"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 sns.set_theme(style="whitegrid")
 pd.set_option("display.max_columns", 50)
+session = requests.Session()
 
 
 def esri_geometry_to_geojson(geometry: dict | None) -> dict | None:
     """Wandelt ESRI-Ringgeometrie (LV95) in GeoJSON-Polygon (WGS84) um."""
     if not geometry or not geometry.get("rings"):
         return None
-    transformer = Transformer.from_crs("EPSG:2056", "EPSG:4326", always_xy=True)
     rings = []
     for ring in geometry["rings"]:
         transformed_ring = []
         for x_coord, y_coord in ring:
-            longitude, latitude = transformer.transform(x_coord, y_coord)
+            longitude, latitude = LV95_TO_WGS84.transform(x_coord, y_coord)
             transformed_ring.append([longitude, latitude])
         rings.append(transformed_ring)
     return {"type": "Polygon", "coordinates": rings}
@@ -80,16 +97,52 @@ def esri_geometry_to_geojson(geometry: dict | None) -> dict | None:
 # %% [markdown]
 # ## 1. Datenerhebung über die Web-API
 #
-# Die geo.admin identify-Antwort kann bei `limit=200` eine zusätzliche
-# Sentinel-Zeile mit `featureId=-99` enthalten. Diese wird dokumentiert und in
-# der Bereinigung entfernt. Die API-Seiten werden über `offset` gelesen und
-# anhand der Feature-ID dedupliziert.
+# Die amtliche Gemeindegrenze wird aus dem aktuellen Datensatz geladen und in
+# 500-m-Kacheln zerlegt. Kacheln werden an der Grenze abgeschnitten. API-Seiten
+# werden anhand der Feature-ID dedupliziert; eine Sentinel-ID wird später
+# entfernt.
 
 # %%
+def gemeindeflaeche() -> Polygon | MultiPolygon:
+    """Lädt die aktuelle offizielle Gemeindegrenze in LV95."""
+    response = session.get(
+        FIND_URL,
+        params={
+            "layer": MUNICIPALITY_LAYER,
+            "searchText": MUNICIPALITY,
+            "searchField": "gemname",
+            "returnGeometry": "true",
+            "sr": 2056,
+        },
+        timeout=TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        raise ValueError("Die Gemeindegrenzen-Antwort enthält keine Ergebnisliste.")
+    current = [
+        result
+        for result in results
+        if result.get("attributes", {}).get("is_current_jahr") is True
+    ]
+    if len(current) != 1:
+        raise ValueError(
+            f"Erwartete eine aktuelle Gemeindegrenze für {MUNICIPALITY}, "
+            f"gefunden: {len(current)}."
+        )
+    rings = current[0].get("geometry", {}).get("rings", [])
+    parts = [Polygon(ring).buffer(0) for ring in rings if len(ring) >= 4]
+    parts = [part for part in parts if not part.is_empty]
+    if not parts:
+        raise ValueError(f"Keine gültige Gemeindegeometrie für {MUNICIPALITY}.")
+    return unary_union(parts)
+
+
 def abfrage(
     bbox: tuple[int, int, int, int], offset: int = 0, limit: int = PAGE_SIZE
 ) -> list[dict]:
-    """Fragt eine Seite der geo.admin identify-API ab."""
+    """Fragt eine Rechteckseite der geo.admin identify-API ab."""
     if not 1 <= limit <= PAGE_SIZE:
         raise ValueError(f"limit muss zwischen 1 und {PAGE_SIZE} liegen.")
     if offset < 0:
@@ -105,46 +158,89 @@ def abfrage(
         "limit": limit,
         "offset": offset,
     }
-    response = requests.get(API_URL, params=params, timeout=TIMEOUT_SECONDS)
-    response.raise_for_status()
-    payload = response.json()
-    results = payload.get("results") if isinstance(payload, dict) else None
-    if not isinstance(results, list):
-        raise ValueError("Die API-Antwort enthält keine gültige 'results'-Liste.")
+    for attempt in range(3):
+        try:
+            response = session.get(API_URL, params=params, timeout=TIMEOUT_SECONDS)
+            response.raise_for_status()
+            payload = response.json()
+            results = payload.get("results") if isinstance(payload, dict) else None
+            if not isinstance(results, list):
+                raise ValueError(
+                    "Die API-Antwort enthält keine gültige 'results'-Liste."
+                )
+            return results
+        except requests.RequestException:
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))
+    raise RuntimeError("Die API-Abfrage wurde unerwartet beendet.")
+
+
+def dach_in_gemeinde(result: dict, area: Polygon | MultiPolygon) -> bool:
+    """Prüft, ob ein Dach innerhalb der offiziellen Gemeindegrenze liegt."""
+    rings = result.get("geometry", {}).get("rings", [])
+    polygons = [
+        Polygon(ring).buffer(0)
+        for ring in rings
+        if len(ring) >= 4
+    ]
+    polygons = [polygon for polygon in polygons if not polygon.is_empty]
+    if not polygons:
+        return False
+    roof = unary_union(polygons)
+    return area.covers(roof.representative_point())
+
+
+def kachel_holen(bbox: tuple[int, int, int, int]) -> list[dict]:
+    """Lädt alle API-Seiten für eine Kachel."""
+    results = []
+    for offset in range(0, MAX_OFFSET + PAGE_SIZE, PAGE_SIZE):
+        page = abfrage(bbox, offset=offset)
+        results.extend(page)
+        if len(page) < PAGE_SIZE:
+            break
+        if offset == MAX_OFFSET:
+            raise RuntimeError(
+                f"Die Kachel erreicht das Offset-Limit {MAX_OFFSET}; "
+                "Ergebnisse könnten fehlen."
+            )
+        time.sleep(0.1)
     return results
 
 
+city_area = gemeindeflaeche()
+xmin, ymin, xmax, ymax = city_area.bounds
 api_results: list[dict] = []
 seen_feature_ids: set[int] = set()
-page_log: list[dict[str, int]] = []
+tile_count = 0
 
-for offset in range(0, MAX_OFFSET, PAGE_SIZE):
-    page = abfrage(BBOX, offset=offset)
-    new_results = []
-    for result in page:
-        feature_id = result.get("featureId")
-        if feature_id is None or feature_id not in seen_feature_ids:
-            new_results.append(result)
-            if feature_id is not None:
-                seen_feature_ids.add(feature_id)
-    api_results.extend(new_results)
-    page_log.append(
-        {"offset": offset, "received": len(page), "new": len(new_results)}
-    )
-    print(
-        f"offset {offset:>5}: {len(page):>3} API-Ergebnisse, "
-        f"{len(new_results):>3} neu; total {len(api_results)}"
-    )
-    if len(page) < PAGE_SIZE:
-        break
-    time.sleep(0.1)
-else:
-    raise RuntimeError(f"Sicherheitsstopp bei offset={MAX_OFFSET}.")
+for x in range(int(xmin), int(xmax), TILE_SIZE):
+    for y in range(int(ymin), int(ymax), TILE_SIZE):
+        tile_bounds = (x, y, x + TILE_SIZE, y + TILE_SIZE)
+        if city_area.intersection(box(*tile_bounds)).area <= 1:
+            continue
+        tile_count += 1
+        for result in kachel_holen(tile_bounds):
+            if not dach_in_gemeinde(result, city_area):
+                continue
+            feature_id = result.get("featureId")
+            if feature_id is None or feature_id not in seen_feature_ids:
+                result["gemeinde"] = MUNICIPALITY
+                api_results.append(result)
+                if feature_id is not None:
+                    seen_feature_ids.add(feature_id)
+        if tile_count % 25 == 0:
+            print(
+                f"{tile_count} Kacheln abgefragt; "
+                f"{len(api_results):,} eindeutige API-Ergebnisse."
+            )
+        time.sleep(0.1)
 
-page_log_df = pd.DataFrame(page_log)
-print(f"\nAPI-Ergebnisse (inkl. Sentinel): {len(api_results)}")
-print("Ergebnisse pro Seite:")
-display(page_log_df)
+print(f"\nGemeindegebiet: {city_area.area / 1_000_000:.2f} km²")
+print(f"Abgefragte Kacheln: {tile_count:,}")
+print(f"API-Ergebnisse (inkl. Sentinel): {len(api_results):,}")
+if not api_results:
+    raise RuntimeError(f"Die API lieferte keine Dachflächen für {MUNICIPALITY}.")
 
 # %% [markdown]
 # ## 2. Rohdaten, Datenbereinigung und neue Merkmale
@@ -164,6 +260,7 @@ raw_rows = []
 for result in api_results:
     row = dict(result.get("attributes", {}))
     row["featureId"] = result.get("featureId")
+    row["gemeinde"] = result.get("gemeinde", MUNICIPALITY)
     row["geometry_esri"] = json.dumps(
         result.get("geometry"), ensure_ascii=False, separators=(",", ":")
     )
@@ -212,6 +309,7 @@ df["geometry_geojson"] = df["geometry_esri"].map(
 # proportional dazu und würden Datenleckage erzeugen.
 analysis_columns = [
     "featureId",
+    "gemeinde",
     "building_id",
     "gwr_egid",
     "klasse",
@@ -346,7 +444,8 @@ plt.show()
 # Die API liefert Dachumrisse in LV95 (EPSG:2056). Für die interaktive
 # Folium-Karte werden die Koordinaten nach WGS84 (EPSG:4326) transformiert.
 # Die Kartenfarbe zeigt den geschätzten Ertrag pro Dachfläche, nicht eine
-# Messung real produzierten Stroms.
+# Messung real produzierten Stroms. Die Karte wird separat gespeichert und
+# verlinkt, damit sie nicht als grosse HTML-Ausgabe ins Notebook eingebettet wird.
 
 # %%
 def build_geojson_features(data: pd.DataFrame) -> list[dict]:
@@ -377,16 +476,12 @@ def build_geojson_features(data: pd.DataFrame) -> list[dict]:
 geo_features = build_geojson_features(df)
 if not geo_features:
     raise ValueError("Keine gültigen Geometrien für die Karte vorhanden.")
-all_coords = [
-    point
-    for feature in geo_features
-    for ring in feature["geometry"]["coordinates"]
-    for point in ring
-]
-map_center = [
-    float(np.mean([point[1] for point in all_coords])),
-    float(np.mean([point[0] for point in all_coords])),
-]
+center_longitude, center_latitude = LV95_TO_WGS84.transform(
+    city_area.centroid.x, city_area.centroid.y
+)
+map_center = [center_latitude, center_longitude]
+city_area_wgs84 = transform_geometry(LV95_TO_WGS84.transform, city_area)
+west, south, east, north = city_area_wgs84.bounds
 yield_min = float(df["stromertrag"].min())
 yield_max = float(df["stromertrag"].quantile(0.95))
 yield_scale = folium.LinearColormap(
@@ -395,7 +490,20 @@ yield_scale = folium.LinearColormap(
     vmax=yield_max,
     caption="BFE-Schätzwert Solarstromertrag (kWh/Jahr; Farbskala bis 95. Perzentil)",
 )
-roof_map = folium.Map(location=map_center, zoom_start=16, tiles="OpenStreetMap")
+roof_map = folium.Map(location=map_center, zoom_start=12, tiles="OpenStreetMap")
+folium.GeoJson(
+    {
+        "type": "Feature",
+        "properties": {"gemeinde": MUNICIPALITY},
+        "geometry": mapping(city_area_wgs84),
+    },
+    name="Gemeindegrenze Winterthur",
+    style_function=lambda feature: {
+        "color": "#111827",
+        "weight": 2,
+        "fillOpacity": 0,
+    },
+).add_to(roof_map)
 folium.GeoJson(
     {"type": "FeatureCollection", "features": geo_features},
     name="BFE-Dachflächen",
@@ -419,9 +527,10 @@ folium.GeoJson(
 ).add_to(roof_map)
 yield_scale.add_to(roof_map)
 folium.LayerControl().add_to(roof_map)
+roof_map.fit_bounds([[south, west], [north, east]], padding=(12, 12))
 roof_map.save(MAP_HTML)
 print(f"Karte gespeichert unter {MAP_HTML}; dargestellte Dachflächen: {len(geo_features):,}")
-roof_map
+display(FileLink(str(MAP_HTML)))
 
 # %% [markdown]
 # ## 6. Statistischer Zusammenhang mit p-Wert
@@ -575,8 +684,8 @@ else:
         "verlässliche Ertragsprognosen in diesem Gebiet nicht aus."
     )
 print(
-    "Die Ergebnisse gelten für die BFE-Potenzialschätzungen im ausgewählten "
-    "Winterthurer Gebiet. Sie zeigen keine kausale Wirkung und sind nicht "
+    "Die Ergebnisse gelten für die BFE-Potenzialschätzungen im gesamten "
+    "Gemeindegebiet Winterthur. Sie zeigen keine kausale Wirkung und sind nicht "
     "ohne neue Validierung auf andere Regionen oder reale Anlagen übertragbar."
 )
 
@@ -619,19 +728,19 @@ display(rf_importance.to_frame().round(3))
 # Schlussfolgerungen sind aus den oben ausgegebenen, bei der Ausführung
 # berechneten Kennzahlen abzuleiten.
 #
-# **Grenzen:** (1) kleines, räumlich begrenztes Gebiet; (2) BFE-Potenzial ist
-# eine Modellschätzung, kein real gemessener Ertrag; (3) nur 1.312 gültige
-# Dachflächen; (4) mehrere Dächer je Gebäude und bewusst gebäudeweiser Split;
-# (5) APIs und Modellversionen können sich ändern; (6) p-Werte belegen keine
-# Kausalität; (7) hohe Ausreißer bleiben erhalten und beeinflussen RMSE.
+# **Grenzen:** (1) Untersuchungsgebiet ist auf die Gemeinde Winterthur
+# beschränkt; (2) BFE-Potenzial ist eine Modellschätzung, kein real gemessener
+# Ertrag; (3) mehrere Dächer je Gebäude und bewusst gebäudeweiser Split;
+# (4) APIs und Modellversionen können sich ändern; (5) p-Werte belegen keine
+# Kausalität; (6) hohe Ausreißer bleiben erhalten und beeinflussen RMSE.
 #
 # **Moodle-Abgabe:** Vor der Abgabe dieses Notebook von oben nach unten
-# ausführen und mit den Outputs speichern. Dazu `solar_test_..._raw.csv`,
-# `solar_test_..._clean.csv`, die SQLite-Datei und optional die HTML-Karte
+# ausführen und mit den Outputs speichern. Dazu `solar_winterthur_stadt_raw.csv`,
+# `solar_winterthur_stadt_clean.csv`, die SQLite-Datei und die HTML-Karte
 # hochladen. Persönliche Moodle-Anmeldung/Upload kann nicht automatisiert
 # werden. Quellen: geo.admin.ch REST API, Layer
-# `ch.bfe.solarenergie-eignung-daecher`, Koordinatenbereich/BBOX oben;
-# Abrufdatum beim Ausführen: aktuelles Datum.
+# `ch.bfe.solarenergie-eignung-daecher` und aktuelle
+# Winterthurer Gemeindegrenze; Abrufdatum beim Ausführen: aktuelles Datum.
 #
 # **Video-Präsentation:** Die Bewertung verlangt eine Aufnahme mit
 # `Gruppengröße × 5 Minuten`. Vor der Aufnahme aktuelle Kennzahlen aus diesem

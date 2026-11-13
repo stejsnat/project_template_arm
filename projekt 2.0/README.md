@@ -6,9 +6,31 @@ Wie hängen Dachfläche, Ausrichtung und Neigung mit dem vom BFE geschätzten
 jährlichen Solarstromertrag zusammen, und wie gut lässt sich dieser Wert für
 bisher ungesehene Gebäude vorhersagen?
 
-Das Untersuchungsgebiet umfasst rund 500 × 500 m in der Winterthurer Altstadt.
-`stromertrag` ist ein modellierter Potenzialwert der Solarkarte, keine Messung
-tatsächlich produzierten Stroms.
+Das Untersuchungsgebiet ist die gesamte aktuelle Gemeinde Winterthur
+(rund 68 km²). `stromertrag` ist ein modellierter Potenzialwert der
+Solarkarte, keine Messung tatsächlich produzierten Stroms.
+
+## Aktueller stadtweiter Lauf
+
+Am 13. November 2026 wurden 333 Kacheln innerhalb der aktuellen
+Gemeindegrenze abgefragt. Der Abruf ergab **55’277 eindeutige Dachflächen**
+und **20’831 Gebäude**. Ein Dach wird mitgezählt, wenn sein Repräsentativpunkt
+innerhalb der Gemeindegrenze liegt. Die ursprüngliche Liste mit sechs
+PLZ-Gebieten wäre unvollständig gewesen; deshalb wird die amtliche
+Gemeindegrenze verwendet.
+
+Der gebäudeweise Testsplit enthielt 11’055 Dächer aus 4’167 bisher ungesehenen
+Gebäuden. Ergebnisse auf diesem Lauf:
+
+| Modell | R² | RMSE (kWh/Jahr) | MAE (kWh/Jahr) |
+|---|---:|---:|---:|
+| Random Forest | 0.992 | 2’886.7 | 988.6 |
+| Multiple lineare Regression | 0.821 | 13’857.4 | 2’282.3 |
+| Median-Baseline | -0.049 | 33’556.6 | 12’021.6 |
+
+Die Spearman-Korrelation zwischen Dachfläche und BFE-Ertrag beträgt 0.977
+(p < 0.001). Diese Werte beschreiben BFE-Potenzialschätzungen im Testgebiet,
+nicht reale Stromproduktion; bei einem erneuten API-Lauf können sie variieren.
 
 ## Schnellstart
 
@@ -18,7 +40,8 @@ python -m pip install -r "projekt 2.0/requirements.txt"
 
 Danach `sonnendach_projekt.ipynb` öffnen und von oben nach unten ausführen. Die
 geo.admin.ch-API muss erreichbar sein; Zahlen können sich bei späteren
-API-/Datenversionen ändern. Alternativ:
+API-/Datenversionen ändern. Die vollständige Stadtabfrage kann mehrere Minuten
+dauern. Alternativ:
 
 ```bash
 python "projekt 2.0/sonnendach_projekt.py"
@@ -75,8 +98,8 @@ gebäudeweise.
 - `sonnendach_projekt.py` — ausführbare Skriptfassung
 - `quiz_dozent.html` — interaktives Quiz mit Auswertung und Erklärungen
 - `praesentation.md` — Folienstruktur, Videoplan und Bewertungsnachweise
-- `solar_test_winterthur_altstadt_raw.csv` — Rohdaten
-- `solar_test_winterthur_altstadt_clean.csv` — bereinigte Analysedaten
+- `solar_winterthur_stadt_raw.csv` — Rohdaten für die ganze Gemeinde
+- `solar_winterthur_stadt_clean.csv` — bereinigte Analysedaten
 - `sonnendach_winterthur.sqlite` — reproduzierbare lokale Datenbank
 - `sonnendach_winterthur_karte.html` — interaktive Karte
 
@@ -96,5 +119,6 @@ speichern. Keine Datenbankpasswörter oder sonstigen Zugangsdaten mit abgeben.
 ## Quelle
 
 geo.admin.ch REST API, MapServer-Layer
-`ch.bfe.solarenergie-eignung-daecher`; BBOX und Abrufparameter sind im Notebook
-dokumentiert. Das Abrufdatum wird bei jeder Ausführung ausgegeben.
+`ch.bfe.solarenergie-eignung-daecher`; die aktuelle Gemeindegrenze wird aus
+`ch.swisstopo.swissboundaries3d-gemeinde-flaeche.fill` geladen und in
+500-m-Kacheln abgefragt. Das Abrufdatum wird bei jeder Ausführung ausgegeben.
